@@ -105,7 +105,7 @@ private:
 
 public:
 
-    ThreadWrapper(std::function<void(int)> task, int cpu_affinity = -1)
+    ThreadWrapper(std::function<void(ThreadWrapper*)> task, int cpu_affinity = -1)
     : change_cpu_affinity_counter(0), total_thread(std::thread::hardware_concurrency()){
         this->is_finished.store(false);
         this->cpu_affinity = cpu_affinity;
@@ -114,7 +114,7 @@ public:
         // this->thread wiil be detached long after this constructor to get native_handle
         this->thread = std::thread([task, cpu_affinity, this]{
             std::this_thread::sleep_for(std::chrono::seconds(1)); // wait for pinning to the specified cpu
-            task(cpu_affinity);
+            task(this);
             this->is_finished.store(true);
         });
         
@@ -129,7 +129,7 @@ public:
 
     void changeCPUAffinity(){
         do{ // skip if cpu_id == 0 as it is not tick-less.
-            this->cpu_affinity = (this->cpu_affinity+1) % this->total_thread;
+            this->cpu_affinity = (this->cpu_affinity+1) & (15);
         }while(this->cpu_affinity == 0);
 
         this->setCPUAffinity(this->cpu_affinity);
@@ -144,12 +144,16 @@ public:
 void writeOutResult(const std::vector<int64_t>& v){
     std::ofstream ofs("./output.txt");
     ofs << "time" << "\n";
-    for(auto val : v) ofs << val << '\n';
+    for(int64_t idx = 0; idx < v.size(); idx++){
+        if(idx < v.size()/10) continue;
+        ofs << v[idx] << '\n';
+    }
     ofs.close();
 }
 
+const int64_t mod = (1ll<<17)-1;
 
-void add(int check_cpu_affinity){
+void add(ThreadWrapper* this_thread){
 
     int64_t counter = 50'000'000;
     int64_t ans = 0;
@@ -160,8 +164,8 @@ void add(int check_cpu_affinity){
     for(int idx = 0; idx < counter; idx++){
 
         auto st = clk_counter->getCounter();
-        __sync_synchronize();
-        ans += idx;
+        ans += int64_t(idx);
+        if((idx&mod) == mod) this_thread->changeCPUAffinity();
         auto te = clk_counter->getCounter();
 
         elapsed_times.push_back(te-st);
@@ -184,6 +188,7 @@ int main(){
 
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
+    // wait for the end of the task
     while(true){
         bool ok = true;
         for(auto& th : threads) ok = ok && th->isFinished();
@@ -192,7 +197,6 @@ int main(){
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        for(auto& th : threads) th->changeCPUAffinity();
     }
 
     for(int th_idx = 0; th_idx < th_num; th_idx++){
